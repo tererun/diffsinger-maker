@@ -1,0 +1,35 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "diffsinger-maker"
+version = "0.1.0"
+description = "One-command DiffSinger voice model builder for OpenUtau"
+requires-python = ">=3.10"
+license = "MIT"
+
+dependencies = [
+    "click>=8.0",
+    "pyyaml>=6.0",
+    "numpy>=1.24",
+    "soundfile>=0.12",
+    "soxr>=0.3",
+    "tqdm>=4.60",
+    "rich>=13.0",
+    "pykakasi>=2.2",
+]
+
+[project.optional-dependencies]
+ja = ["pyopenjtalk>=0.3"]
+en = ["g2p_en>=2.1"]
+zh = ["pypinyin>=0.50"]
+train = ["torch>=2.4", "tensorboard"]
+ui = ["gradio>=4.0"]
+all = ["diffsinger-maker[ja,en,zh,train,ui]"]
+
+[project.scripts]
+dsmaker = "dsmaker.cli:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/dsmaker"]
