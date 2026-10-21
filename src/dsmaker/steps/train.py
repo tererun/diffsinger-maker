@@ -185,38 +185,100 @@ def run_train(project_dir: Path, config: ProjectConfig, target: str = "both") ->
     console.print("\n[green]Training complete![/green]")
 
 
+def _generate_colab_config(config: ProjectConfig, model_type: str) -> dict:
+    """Generate a DiffSinger config for Colab (relative paths, no local deps)."""
+    # Paths relative to DiffSinger repo root on Colab
+    base_yaml = f"configs/{model_type}.yaml"
+    raw_dir = "dataset/raw"
+    binary_dir = f"dataset/binary_{model_type}" if model_type == "variance" else "dataset/binary"
+
+    cfg: dict = {
+        "base_config": [base_yaml],
+        "datasets": [{
+            "raw_data_dir": raw_dir,
+            "speaker": config.name,
+            "spk_id": 0,
+            "language": config.language,
+            "test_prefixes": [],
+        }],
+        "binary_data_dir": binary_dir,
+        "dictionary": f"dictionaries/{config.language}.txt",
+        "num_spk": 1,
+        "audio_sample_rate": config.sample_rate,
+    }
+
+    if model_type == "acoustic":
+        cfg.update({
+            "audio_num_mel_bins": 128,
+            "hop_size": 512, "fft_size": 2048, "win_size": 2048,
+            "max_batch_size": config.training.acoustic.batch_size,
+            "max_updates": config.training.acoustic.max_updates,
+            "accumulate_grad_batches": 1,
+            "val_check_interval": 2000,
+            "num_valid_plots": 4,
+            "backbone_type": "lynxnet",
+            "diffusion_type": "reflow",
+            "use_spk_id": False,
+        })
+    else:
+        cfg.update({
+            "max_batch_size": config.training.variance.batch_size,
+            "max_updates": config.training.variance.max_updates,
+            "predict_dur": True,
+            "predict_pitch": True,
+            "predict_voicing": True,
+            "predict_tension": True,
+        })
+
+    return cfg
+
+
 def export_for_colab(project_dir: Path, config: ProjectConfig) -> Path:
-    """Package dataset and configs into a zip for Google Colab training."""
+    """Package dataset and configs into a zip for Google Colab training.
+
+    Does NOT require DiffSinger to be cloned locally.
+    """
     console.print("[bold]Preparing Colab export...[/bold]")
 
-    ds_dir = ensure_diffsinger()
-
-    # Generate configs
-    acoustic_config = _generate_acoustic_config(project_dir, config, ds_dir)
-    variance_config = _generate_variance_config(project_dir, config, ds_dir)
-
-    # Create zip
     export_dir = ensure_dir(project_dir / "export")
     zip_path = export_dir / f"{config.name}_colab_data.zip"
-
     dataset_raw = project_dir / "dataset" / "raw"
 
+    # Generate Colab-oriented configs (relative paths for Colab)
+    acoustic_cfg = _generate_colab_config(config, "acoustic")
+    variance_cfg = _generate_colab_config(config, "variance")
+
+    # Pick test prefixes
+    csv_path = dataset_raw / "transcriptions.csv"
+    if csv_path.exists():
+        import csv as csv_mod
+        with open(csv_path, encoding="utf-8") as f:
+            names = [row["name"] for row in csv_mod.DictReader(f)]
+        if names:
+            acoustic_cfg["datasets"][0]["test_prefixes"] = names[:3]
+            variance_cfg["datasets"][0]["test_prefixes"] = names[:3]
+
     with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zf:
-        # Add dataset files
+        # Dataset files
         for wav in (dataset_raw / "wavs").glob("*.wav"):
             zf.write(wav, f"dataset/raw/wavs/{wav.name}")
-        csv_path = dataset_raw / "transcriptions.csv"
         if csv_path.exists():
             zf.write(csv_path, "dataset/raw/transcriptions.csv")
 
-        # Add config files
-        zf.write(acoustic_config, "configs/acoustic_config.yaml")
-        zf.write(variance_config, "configs/variance_config.yaml")
+        # Config files
+        zf.writestr(
+            "configs/acoustic_config.yaml",
+            yaml.dump(acoustic_cfg, default_flow_style=False, allow_unicode=True),
+        )
+        zf.writestr(
+            "configs/variance_config.yaml",
+            yaml.dump(variance_cfg, default_flow_style=False, allow_unicode=True),
+        )
 
     console.print(f"[green]Colab data exported: {zip_path}[/green]")
     console.print(f"  Size: {zip_path.stat().st_size / 1024 / 1024:.1f} MB")
 
-    # Generate Colab notebook
+    # Generate notebook
     notebook_path = _generate_colab_notebook(project_dir, config)
     console.print(f"  Notebook: {notebook_path}")
 
