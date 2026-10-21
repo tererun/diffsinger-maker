@@ -81,19 +81,28 @@ def download_file(url: str, target: Path) -> Path:
     return target
 
 
+_SOFA_DEPS = [
+    "lightning", "torch", "scipy", "librosa", "matplotlib",
+    "h5py", "tensorboard", "tensorboardX", "textgrid",
+    "chardet", "numba", "einops", "pandas", "tqdm",
+]
+
+
 def ensure_sofa(cache_dir: Path | None = None) -> Path:
     cache = cache_dir or get_cache_dir()
     sofa_dir = cache / "SOFA"
     clone_repo(SOFA_REPO, sofa_dir)
-    # Install SOFA dependencies
-    req_file = sofa_dir / "requirements.txt"
-    if req_file.exists():
+    # Install SOFA dependencies (without strict version pins)
+    marker = sofa_dir / ".deps_installed"
+    if not marker.exists():
+        console.print("  Installing SOFA dependencies...")
         subprocess.run(
-            [sys.executable, "-m", "pip", "install", "-r", str(req_file), "-q"],
+            [sys.executable, "-m", "pip", "install"] + _SOFA_DEPS + ["-q"],
             check=True,
             capture_output=True,
             text=True,
         )
+        marker.write_text("ok")
     return sofa_dir
 
 
