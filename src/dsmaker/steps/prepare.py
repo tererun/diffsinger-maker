@@ -15,40 +15,60 @@ console = Console()
 
 
 def _parse_textgrid(path: Path) -> list[tuple[float, float, str]]:
-    """Parse a Praat TextGrid file and return intervals from the first tier.
+    """Parse a Praat TextGrid file and return phone-level intervals.
+
+    SOFA produces TextGrids with two tiers: "words" and "phones".
+    We use the "phones" tier for phoneme-level timing.
+    Falls back to the last IntervalTier if "phones" is not found.
 
     Returns list of (start_time, end_time, label).
     """
     text = path.read_text(encoding="utf-8")
-    intervals: list[tuple[float, float, str]] = []
-
     lines = text.strip().splitlines()
+
+    # Parse all tiers
+    tiers: dict[str, list[tuple[float, float, str]]] = {}
+    current_tier: str | None = None
     i = 0
-    in_intervals = False
 
     while i < len(lines):
         line = lines[i].strip()
 
-        if '"IntervalTier"' in line:
-            in_intervals = True
+        # Detect tier name
+        if line.startswith("name ="):
+            current_tier = line.split('"')[1] if '"' in line else line.split("=")[1].strip()
+            tiers[current_tier] = []
             i += 1
             continue
 
-        if in_intervals and line.startswith("xmin"):
-            xmin = float(line.split("=")[1].strip())
+        # Parse intervals: look for "intervals [N]:" pattern
+        if current_tier and line.startswith("intervals ["):
+            # Read xmin, xmax, text for this interval
             i += 1
-            xmax = float(lines[i].strip().split("=")[1].strip())
+            xmin_line = lines[i].strip() if i < len(lines) else ""
             i += 1
-            label_line = lines[i].strip()
-            # Extract text between quotes
-            label = label_line.split('"')[1] if '"' in label_line else label_line.split("=")[1].strip()
-            intervals.append((xmin, xmax, label))
+            xmax_line = lines[i].strip() if i < len(lines) else ""
+            i += 1
+            text_line = lines[i].strip() if i < len(lines) else ""
+
+            try:
+                xmin = float(xmin_line.split("=")[1].strip())
+                xmax = float(xmax_line.split("=")[1].strip())
+                label = text_line.split('"')[1] if '"' in text_line else ""
+                tiers[current_tier].append((xmin, xmax, label))
+            except (ValueError, IndexError):
+                pass
             i += 1
             continue
 
         i += 1
 
-    return intervals
+    # Prefer "phones" tier, fall back to last tier
+    if "phones" in tiers:
+        return tiers["phones"]
+    if tiers:
+        return list(tiers.values())[-1]
+    return []
 
 
 def _parse_htk_lab(path: Path) -> list[tuple[float, float, str]]:
