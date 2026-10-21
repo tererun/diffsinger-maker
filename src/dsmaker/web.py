@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import shutil
 import tempfile
 import traceback
@@ -16,15 +17,11 @@ from dsmaker.utils.platform import ensure_dir, has_cuda
 # ── State helpers ──
 
 def _init_project(
-    name: str, lang: str, audio_files: list[str], lyrics_text: str, backend: str,
+    name: str, lang: str, backend: str,
 ) -> tuple[str, str]:
-    """Step 0: Create project and copy files in."""
+    """Step 0: Create project (without songs yet)."""
     if not name.strip():
         raise gr.Error("歌手名を入力してください")
-    if not audio_files:
-        raise gr.Error("音声ファイルをアップロードしてください")
-    if not lyrics_text.strip():
-        raise gr.Error("歌詞を入力してください")
 
     project_dir = Path(tempfile.mkdtemp(prefix="dsmaker_")) / name
     project_dir.mkdir(parents=True)
@@ -32,60 +29,138 @@ def _init_project(
     config = ProjectConfig(name=name, language=lang)
     config.training.backend = backend
 
-    songs_dir = ensure_dir(project_dir / "raw" / "songs")
-    lyrics_dir = ensure_dir(project_dir / "raw" / "lyrics")
+    ensure_dir(project_dir / "raw" / "songs")
+    ensure_dir(project_dir / "raw" / "lyrics")
     ensure_dir(project_dir / "segments")
     ensure_dir(project_dir / "dataset" / "raw" / "wavs")
     ensure_dir(project_dir / "training")
     ensure_dir(project_dir / "export")
     ensure_dir(project_dir / "output")
 
-    for f in audio_files:
-        src = Path(f)
-        shutil.copy2(src, songs_dir / src.name)
-
-    lyrics_path = lyrics_dir / "lyrics.txt"
-    lyrics_path.write_text(lyrics_text, encoding="utf-8")
-
     config.save(project_dir)
     return str(project_dir), f"Project initialized: {project_dir}"
 
 
-def _run_slice(project_dir_str: str) -> tuple[str, str]:
-    """Step 1: Slice audio."""
+def _add_song(
+    project_dir_str: str, audio_file: str | None, lyrics_text: str, songs_json: str,
+) -> tuple[str, str, str]:
+    """Add a song (WAV + full lyrics) to the project."""
+    if not project_dir_str:
+        raise gr.Error("先にプロジェクトを作成してください")
+    if not audio_file:
+        raise gr.Error("音声ファイルをアップロードしてください")
+
+    project_dir = Path(project_dir_str)
+    songs_dir = project_dir / "raw" / "songs"
+    lyrics_dir = project_dir / "raw" / "lyrics"
+
+    src = Path(audio_file)
+    song_name = src.stem
+    shutil.copy2(src, songs_dir / src.name)
+
+    # Save lyrics with the same stem as the song
+    if lyrics_text.strip():
+        (lyrics_dir / f"{song_name}.txt").write_text(
+            lyrics_text.strip(), encoding="utf-8"
+        )
+
+    # Track songs in state
+    songs: list[dict] = json.loads(songs_json) if songs_json else []
+    line_count = len([l for l in lyrics_text.strip().splitlines() if l.strip()]) if lyrics_text.strip() else 0
+    songs.append({"name": song_name, "file": src.name, "lyrics_lines": line_count})
+
+    # Build display
+    display = "### 登録済みの曲\n\n"
+    for i, s in enumerate(songs, 1):
+        display += f"{i}. **{s['name']}** ({s['file']}) — 歌詞 {s['lyrics_lines']}行\n"
+
+    return json.dumps(songs), display, ""
+
+
+def _run_slice(project_dir_str: str) -> tuple[str, str, str]:
+    """Step 1: Slice audio → return segment-lyrics editor data."""
     from dsmaker.steps.slice import run_slice
+    from dsmaker.steps.transcribe import build_segment_lyrics_map
 
     project_dir = Path(project_dir_str)
     config = ProjectConfig.load(project_dir)
     segments = run_slice(project_dir, config)
+
+    # Build segment-lyrics editor
+    lyrics_dir = project_dir / config.lyrics_dir
+    segments_dir = project_dir / "segments"
+    rows = build_segment_lyrics_map(segments_dir, lyrics_dir)
+
     result = f"Created {len(segments)} segments:\n"
     for s in segments:
         result += f"  - {s.name}\n"
-    return project_dir_str, result
+
+    # Build editable text grouped by song
+    editor_lines = []
+    current_song = ""
+    for row in rows:
+        if row["song"] != current_song:
+            current_song = row["song"]
+            editor_lines.append(f"# {current_song}")
+        editor_lines.append(f"{row['segment']}\t{row['lyric']}")
+
+    return project_dir_str, result, "\n".join(editor_lines)
 
 
-def _run_transcribe(project_dir_str: str) -> tuple[str, str, str]:
-    """Step 2: Transcribe lyrics to phonemes."""
+def _run_transcribe_from_editor(
+    project_dir_str: str, editor_text: str,
+) -> tuple[str, str, str]:
+    """Step 2: Parse editor → convert to phonemes."""
     from dsmaker.steps.transcribe import run_transcribe
 
     project_dir = Path(project_dir_str)
     config = ProjectConfig.load(project_dir)
-    lab_files = run_transcribe(project_dir, config, interactive=False)
 
-    # Build preview table
-    lines = []
+    # Parse editor text into segment-lyrics pairs
+    segment_lyrics: list[tuple[str, str]] = []
+    for line in editor_text.strip().splitlines():
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+        parts = line.split("\t", 1)
+        if len(parts) == 2:
+            segment_lyrics.append((parts[0], parts[1]))
+        elif len(parts) == 1:
+            segment_lyrics.append((parts[0], ""))
+
+    # Also save back to lyrics files for consistency
+    segments_dir = project_dir / "segments"
+    lyrics_dir = project_dir / config.lyrics_dir
+    from dsmaker.steps.transcribe import get_song_segments
+    song_segs = get_song_segments(segments_dir)
+    lyrics_map = {stem: lyric for stem, lyric in segment_lyrics}
+
+    for song_stem, segs in song_segs.items():
+        lines = []
+        for seg in segs:
+            lines.append(lyrics_map.get(seg.stem, ""))
+        (lyrics_dir / f"{song_stem}.txt").write_text(
+            "\n".join(lines), encoding="utf-8"
+        )
+
+    lab_files = run_transcribe(
+        project_dir, config, interactive=False, segment_lyrics=segment_lyrics
+    )
+
+    # Build preview
+    preview_lines = []
     for lab in lab_files:
         content = lab.read_text(encoding="utf-8")
-        lines.append(f"**{lab.stem}**: `{content}`")
-    preview = "\n\n".join(lines)
+        preview_lines.append(f"**{lab.stem}**: `{content}`")
+    preview = "\n\n".join(preview_lines)
 
-    # Build editable text (one lab file per line: filename<tab>phonemes)
-    editable = ""
+    # Build phoneme editor
+    phoneme_edit = ""
     for lab in lab_files:
         content = lab.read_text(encoding="utf-8")
-        editable += f"{lab.stem}\t{content}\n"
+        phoneme_edit += f"{lab.stem}\t{content}\n"
 
-    return project_dir_str, preview, editable
+    return project_dir_str, preview, phoneme_edit
 
 
 def _save_phoneme_edits(project_dir_str: str, editable_text: str) -> str:
@@ -129,7 +204,11 @@ def _run_prepare(project_dir_str: str) -> tuple[str, str, str | None]:
     csv_content = ""
     if csv_path.exists():
         csv_content = csv_path.read_text(encoding="utf-8")
-    return project_dir_str, f"Dataset prepared:\n```\n{csv_content[:2000]}\n```", str(csv_path) if csv_path.exists() else None
+    return (
+        project_dir_str,
+        f"Dataset prepared:\n```\n{csv_content[:2000]}\n```",
+        str(csv_path) if csv_path.exists() else None,
+    )
 
 
 def _run_train(project_dir_str: str) -> tuple[str, str]:
@@ -189,66 +268,82 @@ def create_ui() -> gr.Blocks:
     ) as app:
         # Hidden state
         project_dir_state = gr.State("")
+        songs_state = gr.State("")  # JSON list of added songs
 
         gr.Markdown("# dsmaker — DiffSinger Voice Model Builder")
         gr.Markdown("音声ファイルと歌詞を入れるだけで、OpenUtau用の歌声モデルを作成できます。")
 
         # ── Step 0: Setup ──
-        with gr.Accordion("Step 0: プロジェクト設定", open=True) as step0:
+        with gr.Accordion("Step 0: プロジェクト設定", open=True):
             with gr.Row():
-                with gr.Column(scale=2):
-                    name_input = gr.Textbox(
-                        label="歌手名",
-                        placeholder="MySinger",
-                        value="MySinger",
-                    )
-                    lang_input = gr.Dropdown(
-                        label="言語",
-                        choices=[("日本語", "ja"), ("English", "en"), ("中文", "zh")],
-                        value="ja",
-                    )
-                    backend_input = gr.Radio(
-                        label="学習バックエンド",
-                        choices=[("ローカルGPU", "local"), ("Google Colab", "colab")],
-                        value="local",
-                    )
-                with gr.Column(scale=3):
-                    audio_input = gr.File(
-                        label="音声ファイル (WAV/FLAC)",
-                        file_count="multiple",
-                        file_types=[".wav", ".flac", ".mp3", ".ogg"],
-                    )
-                    lyrics_input = gr.Textbox(
-                        label="歌詞（1行 = スライス後の1セグメントに対応）",
-                        placeholder="さくらさくら\nやよいのそらは\nみわたすかぎり",
-                        lines=8,
-                    )
-            init_btn = gr.Button("プロジェクト作成", variant="primary", size="lg")
+                name_input = gr.Textbox(
+                    label="歌手名", placeholder="MySinger", value="MySinger", scale=2,
+                )
+                lang_input = gr.Dropdown(
+                    label="言語",
+                    choices=[("日本語", "ja"), ("English", "en"), ("中文", "zh")],
+                    value="ja", scale=1,
+                )
+                backend_input = gr.Radio(
+                    label="学習バックエンド",
+                    choices=[("ローカルGPU", "local"), ("Google Colab", "colab")],
+                    value="local", scale=2,
+                )
+            init_btn = gr.Button("プロジェクト作成", variant="primary")
             init_output = gr.Markdown()
 
+        # ── Step 0.5: Add songs ──
+        with gr.Accordion("Step 0.5: 曲を追加", open=False) as step_songs:
+            gr.Markdown(
+                "曲を1つずつ追加してください。\n"
+                "各曲に音声ファイル（WAV）とその曲の歌詞（全文）を入れます。"
+            )
+            with gr.Row():
+                with gr.Column(scale=1):
+                    song_audio = gr.File(
+                        label="音声ファイル (1曲)",
+                        file_count="single",
+                        file_types=[".wav", ".flac", ".mp3", ".ogg"],
+                    )
+                with gr.Column(scale=2):
+                    song_lyrics = gr.Textbox(
+                        label="この曲の歌詞（全文・漢字OK）",
+                        placeholder="桜咲く春の空に\n風が優しく吹いて\n夢の中で歌う",
+                        lines=8,
+                    )
+            add_song_btn = gr.Button("この曲を追加", variant="secondary", size="lg")
+            songs_display = gr.Markdown("まだ曲が追加されていません。")
+
         # ── Step 1: Slice ──
-        with gr.Accordion("Step 1: 音声スライス", open=False) as step1:
-            gr.Markdown("録音を無音部分で自動的にセグメントに分割します。")
+        with gr.Accordion("Step 1: 音声スライス", open=False):
+            gr.Markdown("全ての曲を無音部分で自動的にセグメントに分割します。")
             slice_btn = gr.Button("スライス実行", variant="primary")
             slice_output = gr.Markdown()
 
-        # ── Step 2: Transcribe ──
-        with gr.Accordion("Step 2: 歌詞→音素変換", open=False) as step2:
-            gr.Markdown("歌詞テキストを音素列に変換します。変換結果を確認・編集できます。")
+        # ── Step 2: Lyrics & Transcribe ──
+        with gr.Accordion("Step 2: セグメント歌詞 → 音素変換", open=False):
+            gr.Markdown(
+                "スライス後の各セグメントに歌詞が割り当てられています。\n"
+                "必要に応じて修正してから「音素変換」を実行してください。\n\n"
+                "形式: `セグメント名<Tab>歌詞` （`#` で始まる行は曲名ヘッダ）"
+            )
+            segment_lyrics_editor = gr.Textbox(
+                label="セグメント歌詞エディタ",
+                lines=15,
+                interactive=True,
+                placeholder="# song1\nsong1_0000\t桜咲く春の空に\nsong1_0001\t風が優しく吹いて",
+            )
             transcribe_btn = gr.Button("音素変換実行", variant="primary")
-            transcribe_preview = gr.Markdown(label="変換結果プレビュー")
+            transcribe_preview = gr.Markdown(label="変換結果")
+
             with gr.Accordion("音素を手動編集（上級者向け）", open=False):
                 gr.Markdown("各行: `セグメント名<Tab>音素列` の形式で編集してください。")
-                phoneme_editor = gr.Textbox(
-                    label="音素エディタ",
-                    lines=10,
-                    interactive=True,
-                )
+                phoneme_editor = gr.Textbox(label="音素エディタ", lines=10, interactive=True)
                 save_phonemes_btn = gr.Button("編集を保存")
                 save_phonemes_output = gr.Markdown()
 
         # ── Step 3: Label ──
-        with gr.Accordion("Step 3: SOFA自動アライメント", open=False) as step3:
+        with gr.Accordion("Step 3: SOFA自動アライメント", open=False):
             gr.Markdown(
                 "SOFAで音素の時間位置を自動推定します。\n\n"
                 "**初回実行時**: SOFAリポジトリの自動クローンと、言語モデル(.ckpt)の配置が必要です。\n"
@@ -258,14 +353,14 @@ def create_ui() -> gr.Blocks:
             label_output = gr.Markdown()
 
         # ── Step 4: Prepare ──
-        with gr.Accordion("Step 4: データセット生成", open=False) as step4:
+        with gr.Accordion("Step 4: データセット生成", open=False):
             gr.Markdown("アライメント結果からDiffSinger学習用データセットを生成します。")
             prepare_btn = gr.Button("データセット生成", variant="primary")
             prepare_output = gr.Markdown()
             prepare_download = gr.File(label="transcriptions.csv", visible=False)
 
         # ── Step 5: Train ──
-        with gr.Accordion("Step 5: モデル学習", open=False) as step5:
+        with gr.Accordion("Step 5: モデル学習", open=False):
             gr.Markdown(
                 "DiffSingerでモデルを学習します。\n"
                 "- **ローカル**: NVIDIA GPUが必要。数時間〜数日かかります。\n"
@@ -275,13 +370,13 @@ def create_ui() -> gr.Blocks:
             train_output = gr.Markdown()
 
         # ── Step 6: Export ──
-        with gr.Accordion("Step 6: ONNX出力", open=False) as step6:
+        with gr.Accordion("Step 6: ONNX出力", open=False):
             gr.Markdown("学習済みモデルをONNX形式でエクスポートします。")
             export_btn = gr.Button("ONNXエクスポート", variant="primary")
             export_output = gr.Markdown()
 
         # ── Step 7: Package ──
-        with gr.Accordion("Step 7: OpenUtauパッケージ", open=False) as step7:
+        with gr.Accordion("Step 7: OpenUtauパッケージ", open=False):
             gr.Markdown("モデルをOpenUtauで使える形式にパッケージします。")
             package_btn = gr.Button("パッケージ作成", variant="primary")
             package_output = gr.Markdown()
@@ -289,49 +384,62 @@ def create_ui() -> gr.Blocks:
 
         # ── Event wiring ──
 
-        def on_init(name, lang, audio_files, lyrics, backend):
-            if audio_files is None:
-                audio_files = []
-            file_paths = [f.name if hasattr(f, 'name') else str(f) for f in audio_files]
+        def on_init(name, lang, backend):
             try:
-                pd, msg = _init_project(name, lang, file_paths, lyrics, backend)
-                return pd, f"✅ {msg}"
+                pd, msg = _init_project(name, lang, backend)
+                return pd, f"✅ {msg}", ""
             except Exception as e:
-                return "", f"❌ Error: {e}"
+                return "", f"❌ {e}", ""
 
         init_btn.click(
             fn=on_init,
-            inputs=[name_input, lang_input, audio_input, lyrics_input, backend_input],
-            outputs=[project_dir_state, init_output],
+            inputs=[name_input, lang_input, backend_input],
+            outputs=[project_dir_state, init_output, songs_state],
+        )
+
+        def on_add_song(pd, audio, lyrics, songs_json):
+            if audio is None:
+                return songs_json, "❌ 音声ファイルをアップロードしてください", ""
+            file_path = audio.name if hasattr(audio, "name") else str(audio)
+            try:
+                new_songs, display, _ = _add_song(pd, file_path, lyrics, songs_json)
+                return new_songs, f"✅ 曲を追加しました\n\n{display}", ""
+            except Exception as e:
+                return songs_json, f"❌ {e}", ""
+
+        add_song_btn.click(
+            fn=on_add_song,
+            inputs=[project_dir_state, song_audio, song_lyrics, songs_state],
+            outputs=[songs_state, songs_display, song_lyrics],
         )
 
         def on_slice(pd):
             if not pd:
-                return pd, "❌ 先にプロジェクトを作成してください"
+                return pd, "❌ 先にプロジェクトを作成してください", ""
             try:
-                pd, msg = _run_slice(pd)
-                return pd, f"✅ {msg}"
+                pd, msg, editor = _run_slice(pd)
+                return pd, f"✅ {msg}", editor
             except Exception as e:
-                return pd, f"❌ {e}\n```\n{traceback.format_exc()}\n```"
+                return pd, f"❌ {e}\n```\n{traceback.format_exc()}\n```", ""
 
         slice_btn.click(
             fn=on_slice,
             inputs=[project_dir_state],
-            outputs=[project_dir_state, slice_output],
+            outputs=[project_dir_state, slice_output, segment_lyrics_editor],
         )
 
-        def on_transcribe(pd):
+        def on_transcribe(pd, editor_text):
             if not pd:
                 return pd, "❌ 先にスライスを実行してください", ""
             try:
-                pd, preview, editable = _run_transcribe(pd)
-                return pd, f"✅ 変換完了\n\n{preview}", editable
+                pd, preview, phoneme_edit = _run_transcribe_from_editor(pd, editor_text)
+                return pd, f"✅ 変換完了\n\n{preview}", phoneme_edit
             except Exception as e:
                 return pd, f"❌ {e}\n```\n{traceback.format_exc()}\n```", ""
 
         transcribe_btn.click(
             fn=on_transcribe,
-            inputs=[project_dir_state],
+            inputs=[project_dir_state, segment_lyrics_editor],
             outputs=[project_dir_state, transcribe_preview, phoneme_editor],
         )
 
@@ -359,11 +467,7 @@ def create_ui() -> gr.Blocks:
             except Exception as e:
                 return pd, f"❌ {e}\n```\n{traceback.format_exc()}\n```"
 
-        label_btn.click(
-            fn=on_label,
-            inputs=[project_dir_state],
-            outputs=[project_dir_state, label_output],
-        )
+        label_btn.click(fn=on_label, inputs=[project_dir_state], outputs=[project_dir_state, label_output])
 
         def on_prepare(pd):
             if not pd:
@@ -376,11 +480,7 @@ def create_ui() -> gr.Blocks:
             except Exception as e:
                 return pd, f"❌ {e}\n```\n{traceback.format_exc()}\n```", gr.update(visible=False)
 
-        prepare_btn.click(
-            fn=on_prepare,
-            inputs=[project_dir_state],
-            outputs=[project_dir_state, prepare_output, prepare_download],
-        )
+        prepare_btn.click(fn=on_prepare, inputs=[project_dir_state], outputs=[project_dir_state, prepare_output, prepare_download])
 
         def on_train(pd):
             if not pd:
@@ -391,11 +491,7 @@ def create_ui() -> gr.Blocks:
             except Exception as e:
                 return pd, f"❌ {e}\n```\n{traceback.format_exc()}\n```"
 
-        train_btn.click(
-            fn=on_train,
-            inputs=[project_dir_state],
-            outputs=[project_dir_state, train_output],
-        )
+        train_btn.click(fn=on_train, inputs=[project_dir_state], outputs=[project_dir_state, train_output])
 
         def on_export(pd):
             if not pd:
@@ -406,11 +502,7 @@ def create_ui() -> gr.Blocks:
             except Exception as e:
                 return pd, f"❌ {e}\n```\n{traceback.format_exc()}\n```"
 
-        export_btn.click(
-            fn=on_export,
-            inputs=[project_dir_state],
-            outputs=[project_dir_state, export_output],
-        )
+        export_btn.click(fn=on_export, inputs=[project_dir_state], outputs=[project_dir_state, export_output])
 
         def on_package(pd):
             if not pd:
@@ -423,11 +515,7 @@ def create_ui() -> gr.Blocks:
             except Exception as e:
                 return pd, f"❌ {e}\n```\n{traceback.format_exc()}\n```", gr.update(visible=False)
 
-        package_btn.click(
-            fn=on_package,
-            inputs=[project_dir_state],
-            outputs=[project_dir_state, package_output, package_download],
-        )
+        package_btn.click(fn=on_package, inputs=[project_dir_state], outputs=[project_dir_state, package_output, package_download])
 
     return app
 
