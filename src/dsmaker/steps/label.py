@@ -145,19 +145,18 @@ def run_label(project_dir: Path, config: ProjectConfig) -> list[Path]:
     env = {
         **os.environ,
         "CUDA_VISIBLE_DEVICES": "",
-        "PYTORCH_ENABLE_MPS_FALLBACK": "0",
-        "NO_MPS": "1",
+        "LT_ACCELERATOR": "cpu",
     }
 
-    # Create a wrapper that forces CPU before running SOFA
-    wrapper = sofa_dir / "_dsmaker_run.py"
-    wrapper.write_text(
-        "import torch\n"
-        "torch.backends.mps.is_available = lambda: False\n"
-        "torch.backends.mps.is_built = lambda: False\n"
-        "exec(open('infer.py').read())\n"
+    # Patch SOFA's infer.py to force CPU in Trainer
+    patched = sofa_dir / "_dsmaker_infer.py"
+    original = (sofa_dir / "infer.py").read_text(encoding="utf-8")
+    patched_code = original.replace(
+        "trainer = pl.Trainer(logger=False)",
+        'trainer = pl.Trainer(logger=False, accelerator="cpu")',
     )
-    cmd[1] = str(wrapper)
+    patched.write_text(patched_code, encoding="utf-8")
+    cmd[1] = str(patched)
 
     try:
         result = subprocess.run(
