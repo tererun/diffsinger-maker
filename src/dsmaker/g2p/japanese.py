@@ -94,14 +94,81 @@ for _kana, _phs in _KANA_TABLE:
 _KANA_MAP.sort(key=lambda x: len(x[0]), reverse=True)
 
 
+def _english_to_kana(word: str) -> str:
+    """Approximate English word → katakana using simple phonetic rules."""
+    word = word.lower().strip()
+    if not word:
+        return ""
+
+    # Common English word → katakana dictionary
+    _WORD_MAP = {
+        "love": "ラブ", "story": "ストーリー", "forever": "フォーエバー",
+        "hello": "ハロー", "world": "ワールド", "baby": "ベイビー",
+        "dream": "ドリーム", "heart": "ハート", "star": "スター",
+        "night": "ナイト", "light": "ライト", "time": "タイム",
+        "life": "ライフ", "day": "デイ", "way": "ウェイ",
+        "you": "ユー", "me": "ミー", "my": "マイ", "your": "ユア",
+        "the": "ザ", "and": "アンド", "for": "フォー", "with": "ウィズ",
+        "this": "ディス", "that": "ザット",
+        "i": "アイ", "a": "ア",
+        "oh": "オー", "yeah": "イェア", "no": "ノー", "yes": "イエス",
+        "one": "ワン", "two": "ツー", "three": "スリー",
+        "sing": "シング", "song": "ソング", "music": "ミュージック",
+        "kiss": "キス", "smile": "スマイル", "cry": "クライ",
+        "fly": "フライ", "sky": "スカイ", "rain": "レイン",
+        "fire": "ファイア", "water": "ウォーター",
+        "true": "トゥルー", "blue": "ブルー", "new": "ニュー",
+        "good": "グッド", "bad": "バッド",
+        "happy": "ハッピー", "crazy": "クレイジー",
+        "sweet": "スウィート", "bitter": "ビター",
+        "angel": "エンジェル", "devil": "デビル",
+        "boy": "ボーイ", "girl": "ガール",
+        "morning": "モーニング", "evening": "イブニング",
+        "summer": "サマー", "winter": "ウィンター",
+        "spring": "スプリング", "fall": "フォール",
+        "color": "カラー", "rainbow": "レインボー",
+        "feeling": "フィーリング", "everything": "エブリシング",
+        "nothing": "ナッシング", "something": "サムシング",
+    }
+
+    if word in _WORD_MAP:
+        return _WORD_MAP[word]
+
+    # Fallback: rough letter-by-letter approximation
+    _LETTER_MAP = {
+        "a": "エイ", "b": "ビー", "c": "シー", "d": "ディー", "e": "イー",
+        "f": "エフ", "g": "ジー", "h": "エイチ", "i": "アイ", "j": "ジェイ",
+        "k": "ケイ", "l": "エル", "m": "エム", "n": "エヌ", "o": "オー",
+        "p": "ピー", "q": "キュー", "r": "アール", "s": "エス", "t": "ティー",
+        "u": "ユー", "v": "ブイ", "w": "ダブリュー", "x": "エックス",
+        "y": "ワイ", "z": "ゼット",
+    }
+    # For unknown words, just do letter-by-letter (better than nothing)
+    return "".join(_LETTER_MAP.get(c, "") for c in word)
+
+
 def _kanji_to_kana(text: str) -> str:
-    """Convert kanji text to hiragana using pykakasi."""
+    """Convert kanji/English text to hiragana using pykakasi.
+
+    English words are converted to katakana approximations.
+    """
     from pykakasi import kakasi
 
     kks = kakasi()
     result = []
     for item in kks.convert(text):
-        result.append(item["hira"])
+        orig = item["orig"].strip()
+        hira = item["hira"]
+
+        # pykakasi leaves English unchanged — convert it ourselves
+        if orig and hira == orig and any(c.isascii() and c.isalpha() for c in orig):
+            words = orig.split()
+            for w in words:
+                kana = _english_to_kana(w)
+                if kana:
+                    result.append(kana)
+        else:
+            result.append(hira)
     return "".join(result)
 
 
