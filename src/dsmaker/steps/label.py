@@ -155,15 +155,8 @@ def run_label(project_dir: Path, config: ProjectConfig) -> list[Path]:
         "trainer = pl.Trainer(logger=False)",
         'trainer = pl.Trainer(logger=False, accelerator="cpu")',
     )
-    # Prepend torchaudio soundfile backend setup
-    header = (
-        "import torchaudio\n"
-        "try:\n"
-        "    torchaudio.set_audio_backend('soundfile')\n"
-        "except Exception:\n"
-        "    pass\n"
-    )
-    patched_code = header + patched_code
+    # No extra header needed — SOFA's load_wav.py already falls back to librosa
+    # when torchaudio is not available
     patched.write_text(patched_code, encoding="utf-8")
     cmd[1] = str(patched)
 
