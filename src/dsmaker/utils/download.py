@@ -106,18 +106,27 @@ def ensure_sofa(cache_dir: Path | None = None) -> Path:
     return sofa_dir
 
 
+_DIFFSINGER_DEPS = [
+    "lightning", "torch", "tensorboard", "scipy", "matplotlib",
+    "h5py", "onnx", "onnxsim", "praat-parselmouth", "resampy",
+    "torchcrepe", "pyloudnorm", "pyyaml", "tqdm", "setuptools<70",
+]
+
+
 def ensure_diffsinger(cache_dir: Path | None = None) -> Path:
     cache = cache_dir or get_cache_dir()
     ds_dir = cache / "DiffSinger"
     clone_repo(DIFFSINGER_REPO, ds_dir)
-    req_file = ds_dir / "requirements.txt"
-    if req_file.exists():
+    marker = ds_dir / ".deps_installed"
+    if not marker.exists():
+        console.print("  Installing DiffSinger dependencies...")
         subprocess.run(
-            [sys.executable, "-m", "pip", "install", "-r", str(req_file), "-q"],
+            [sys.executable, "-m", "pip", "install"] + _DIFFSINGER_DEPS + ["-q"],
             check=True,
             capture_output=True,
             text=True,
         )
+        marker.write_text("ok")
     return ds_dir
 
 
