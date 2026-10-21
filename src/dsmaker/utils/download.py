@@ -82,7 +82,7 @@ def download_file(url: str, target: Path) -> Path:
 
 
 _SOFA_DEPS = [
-    "lightning", "torch", "torchaudio", "torchcodec", "scipy", "librosa",
+    "lightning", "torch", "torchaudio", "scipy", "librosa",
     "matplotlib", "h5py", "tensorboard", "tensorboardX", "textgrid",
     "chardet", "numba", "einops", "pandas", "tqdm", "setuptools",
 ]

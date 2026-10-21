@@ -148,13 +148,22 @@ def run_label(project_dir: Path, config: ProjectConfig) -> list[Path]:
         "LT_ACCELERATOR": "cpu",
     }
 
-    # Patch SOFA's infer.py to force CPU in Trainer
+    # Patch SOFA's infer.py: force CPU + soundfile backend (avoids torchcodec/FFmpeg)
     patched = sofa_dir / "_dsmaker_infer.py"
     original = (sofa_dir / "infer.py").read_text(encoding="utf-8")
     patched_code = original.replace(
         "trainer = pl.Trainer(logger=False)",
         'trainer = pl.Trainer(logger=False, accelerator="cpu")',
     )
+    # Prepend torchaudio soundfile backend setup
+    header = (
+        "import torchaudio\n"
+        "try:\n"
+        "    torchaudio.set_audio_backend('soundfile')\n"
+        "except Exception:\n"
+        "    pass\n"
+    )
+    patched_code = header + patched_code
     patched.write_text(patched_code, encoding="utf-8")
     cmd[1] = str(patched)
 
