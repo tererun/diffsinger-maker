@@ -140,6 +140,25 @@ def run_label(project_dir: Path, config: ProjectConfig) -> list[Path]:
         "--out_formats", "TextGrid,htk",
     ] + dict_arg
 
+    # Force CPU to avoid MPS/CUDA compatibility issues with SOFA
+    import os
+    env = {
+        **os.environ,
+        "CUDA_VISIBLE_DEVICES": "",
+        "PYTORCH_ENABLE_MPS_FALLBACK": "0",
+        "NO_MPS": "1",
+    }
+
+    # Create a wrapper that forces CPU before running SOFA
+    wrapper = sofa_dir / "_dsmaker_run.py"
+    wrapper.write_text(
+        "import torch\n"
+        "torch.backends.mps.is_available = lambda: False\n"
+        "torch.backends.mps.is_built = lambda: False\n"
+        "exec(open('infer.py').read())\n"
+    )
+    cmd[1] = str(wrapper)
+
     try:
         result = subprocess.run(
             cmd,
@@ -147,6 +166,7 @@ def run_label(project_dir: Path, config: ProjectConfig) -> list[Path]:
             capture_output=True,
             text=True,
             check=True,
+            env=env,
         )
         if result.stdout:
             console.print(f"[dim]{result.stdout.strip()}[/dim]")
