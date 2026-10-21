@@ -147,10 +147,86 @@ def _english_to_kana(word: str) -> str:
     return "".join(_LETTER_MAP.get(c, "") for c in word)
 
 
+def _number_to_kana(num_str: str) -> str:
+    """Convert a numeric string to Japanese reading in hiragana."""
+    _DIGITS = {
+        "0": "ぜろ", "1": "いち", "2": "に", "3": "さん", "4": "よん",
+        "5": "ご", "6": "ろく", "7": "なな", "8": "はち", "9": "きゅう",
+    }
+    _PLACES = {
+        1: "", 2: "じゅう", 3: "ひゃく", 4: "せん",
+    }
+    _BIG = {
+        4: "まん", 8: "おく",
+    }
+
+    num_str = num_str.strip()
+    if not num_str.isdigit():
+        return "".join(_DIGITS.get(c, "") for c in num_str)
+
+    n = int(num_str)
+    if n == 0:
+        return "ぜろ"
+    if n < 0:
+        return "まいなす" + _number_to_kana(str(-n))
+
+    # Simple approach: read each digit for large numbers
+    if n >= 100000000:
+        return "".join(_DIGITS.get(c, "") for c in str(n))
+
+    # Handle up to 99,999,999
+    parts = []
+
+    if n >= 10000:
+        man = n // 10000
+        n %= 10000
+        if man > 1:
+            parts.append(_number_to_kana(str(man)))
+        parts.append("まん")
+
+    if n >= 1000:
+        sen = n // 1000
+        n %= 1000
+        if sen == 3:
+            parts.append("さんぜん")
+        elif sen > 1:
+            parts.append(_number_to_kana(str(sen)) + "せん")
+        else:
+            parts.append("せん")
+
+    if n >= 100:
+        hyaku = n // 100
+        n %= 100
+        if hyaku == 3:
+            parts.append("さんびゃく")
+        elif hyaku == 6:
+            parts.append("ろっぴゃく")
+        elif hyaku == 8:
+            parts.append("はっぴゃく")
+        elif hyaku > 1:
+            parts.append(_DIGITS[str(hyaku)] + "ひゃく")
+        else:
+            parts.append("ひゃく")
+
+    if n >= 10:
+        juu = n // 10
+        n %= 10
+        if juu > 1:
+            parts.append(_DIGITS[str(juu)] + "じゅう")
+        else:
+            parts.append("じゅう")
+
+    if n > 0:
+        parts.append(_DIGITS[str(n)])
+
+    return "".join(parts)
+
+
 def _kanji_to_kana(text: str) -> str:
-    """Convert kanji/English text to hiragana using pykakasi.
+    """Convert kanji/English/number text to hiragana using pykakasi.
 
     English words are converted to katakana approximations.
+    Numbers are converted to Japanese readings.
     """
     from pykakasi import kakasi
 
@@ -160,8 +236,11 @@ def _kanji_to_kana(text: str) -> str:
         orig = item["orig"].strip()
         hira = item["hira"]
 
+        # pykakasi leaves numbers unchanged — convert them
+        if orig and orig.isdigit():
+            result.append(_number_to_kana(orig))
         # pykakasi leaves English unchanged — convert it ourselves
-        if orig and hira == orig and any(c.isascii() and c.isalpha() for c in orig):
+        elif orig and hira == orig and any(c.isascii() and c.isalpha() for c in orig):
             words = orig.split()
             for w in words:
                 kana = _english_to_kana(w)
