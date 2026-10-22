@@ -319,7 +319,7 @@ def _generate_colab_notebook(project_dir: Path, config: ProjectConfig) -> Path:
                 "!git clone --depth 1 https://github.com/openvpi/DiffSinger.git\n",
                 "%cd DiffSinger\n",
                 "# Install deps without strict version pins (requirements.txt has conflicts)\n",
-                "!pip install lightning torch torchaudio tensorboard scipy matplotlib h5py onnx onnxsim praat-parselmouth resampy torchcrepe pyloudnorm pyyaml tqdm -q\n",
+                "!pip install 'lightning<2.4' torch torchaudio tensorboard scipy matplotlib h5py onnx onnxsim praat-parselmouth resampy torchcrepe pyloudnorm pyworld pyyaml tqdm -q\n",
                 "\n",
                 "# Download pretrained models\n",
                 "!mkdir -p checkpoints/rmvpe checkpoints/vr\n",
