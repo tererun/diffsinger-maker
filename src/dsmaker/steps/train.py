@@ -203,6 +203,7 @@ def _generate_colab_config(config: ProjectConfig, model_type: str) -> dict:
         }],
         "binary_data_dir": binary_dir,
         "dictionary": f"dictionaries/{config.language}.txt",
+        "dictionaries": {config.language: f"dictionaries/{config.language}.txt"},
         "num_spk": 1,
         "audio_sample_rate": config.sample_rate,
     }
@@ -275,6 +276,16 @@ def export_for_colab(project_dir: Path, config: ProjectConfig) -> Path:
             yaml.dump(variance_cfg, default_flow_style=False, allow_unicode=True),
         )
 
+        # Dictionary file — generate from transcriptions.csv phonemes
+        if csv_path.exists():
+            import csv as csv_mod
+            phonemes = set()
+            with open(csv_path, encoding="utf-8") as f:
+                for row in csv_mod.DictReader(f):
+                    phonemes.update(row["ph_seq"].split())
+            dict_content = "\n".join(f"{ph}\t{ph}" for ph in sorted(phonemes))
+            zf.writestr(f"dictionaries/{config.language}.txt", dict_content)
+
     console.print(f"[green]Colab data exported: {zip_path}[/green]")
     console.print(f"  Size: {zip_path.stat().st_size / 1024 / 1024:.1f} MB")
 
@@ -307,7 +318,14 @@ def _generate_colab_notebook(project_dir: Path, config: ProjectConfig) -> Path:
                 "# 1. Setup\n",
                 "!git clone --depth 1 https://github.com/openvpi/DiffSinger.git\n",
                 "%cd DiffSinger\n",
-                "!pip install -r requirements.txt -q\n",
+                "# Install deps without strict version pins (requirements.txt has conflicts)\n",
+                "!pip install lightning torch torchaudio tensorboard scipy matplotlib h5py onnx onnxsim praat-parselmouth resampy torchcrepe pyloudnorm pyyaml tqdm -q\n",
+                "\n",
+                "# Download pretrained models\n",
+                "!mkdir -p checkpoints/rmvpe checkpoints/vr\n",
+                "!wget -q https://github.com/yxlllc/RMVPE/releases/download/230917/rmvpe.zip && unzip -q rmvpe.zip -d checkpoints/rmvpe && rm rmvpe.zip\n",
+                "!wget -q https://github.com/yxlllc/vocal-remover/releases/download/hnsep_240512/hnsep_240512.zip && unzip -q hnsep_240512.zip -d checkpoints/vr && rm hnsep_240512.zip\n",
+                "!wget -q https://github.com/openvpi/vocoders/releases/download/pc-nsf-hifigan-44.1k-hop512-128bin-2025.02/pc_nsf_hifigan_44.1k_hop512_128bin_2025.02.zip && unzip -q pc_nsf_hifigan_44.1k_hop512_128bin_2025.02.zip -d checkpoints && rm pc_nsf_hifigan_44.1k_hop512_128bin_2025.02.zip\n",
             ],
             "outputs": [],
             "execution_count": None,
